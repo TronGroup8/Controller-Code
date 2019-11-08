@@ -1,5 +1,21 @@
 /*================================================================================================================
- Controller Code
+ Program4-Controller.c; (Note: Program for the Controller PIC24H microcontroller)
+ 
+ A variable resistor connected to AN0 will be used to vary a voltage from 0Vdc to
+ 3.3Vdc.  The ADC results are stored into a variable (ONTime) which will then be 
+ added to an array (SendDataArray).  This array will utilize the UART1 hardware
+ module to send this data through the TX pin to a HC-O5 Bluetooth Module.  Another
+ HC-05 Bluetooth Module which is paired will be connected to the Robot PIC24H
+ microcontroller. The Controller PIC24H microcontroller will also utilize the UART1
+ module to receive data through the RX pin connected to the HC-05 Bluetooth Module
+ and store this data into an array (ReceiveDataArray). A value from this array is stored
+ into a variable (Photocell) and is used to adjust Timer3's Interrupt which will
+ control the pulse rate of an LED connected to RB5.
+
+ Note: Communications is setup for 115200 Baud, 8 Data Bits, 1 Stop Bit and No Parity Bit
+
+ For information on PIC24H Compiler Peripheral Libraries refer to link below:
+ file:///C:/Program%20Files%20(x86)/Microchip/xc16/v1.32/docs/periph_libs/16-bit%20Peripheral%20Libraries.htm
 =================================================================================================================*/
 #include "p24HJ128GP502.h"  //Include device library file
 #include "timer.h"          //Include TIMER library file
@@ -23,10 +39,17 @@ void ADC (void);
 void ProcessData(void);
 void SendData(void);
 void Shutdown(void);
+long Map(long x, long in_min, long in_max, long out_min, long out_max); //Q4 ADDED in order to use mapping function
+
+		
+void CondPWM(void);			// Revised by Fernando Ragone - Oct. 29 - Added to set up PWM conditioning Fuction Q5 	
+
 
 //Global variables
 unsigned int Photocell = 0;     //Value received from UART1 to control the pulsing rate of an LED connected to RB5 
-unsigned int ONTime = 0;        //Variable sent to the Robot PIC24H microcontroller via HC-05 Bluetooth Module
+unsigned int ONTime = 0;        //Variable sent to the Robot PIC24H microcontroller via HC-05 Bluetooth Module	
+unsigned int ONTime2 = 0;       // ADDED Q4 Variable for ONTime of the VEX motor contorller 
+unsigned int limitswitch = 0;   //ADDED Q3 to receive data from 
 
 unsigned char SendDataArray[BUFF_SIZE];     //Array to store the data to be transmitted through UART1 TX pin
 unsigned char ReceiveDataArray[BUFF_SIZE];  //Array to store the data received from UART1 RX pin
@@ -37,12 +60,30 @@ int uartcount = 0;                          //The current array index of the rec
 unsigned int CommsLossCount = 0;            //Store the number of times there was a communication loss
 unsigned short Communicating;               //Store the value ReceiveDataArray[20], if 1 then new data received
 
+unsigned int PWM1 = 65535;	//PWM1, used to store value of PWM Signal to drive motors  			
+unsigned int PWM2 = 65535;	//Initialize PWM2, used to store value of PWM Signal to arm motors
+                            //Note the value of 65535 represents 100% Duty Cycle = motor off 	
+unsigned int Direction = 0;          // Q5 added to set direction variable 
+unsigned int ArmDirection =0; //direction bit to set direction of arm 
+
+//switch inputs 
+unsigned int AutoMode = 0;
+unsigned int BasketDump = 0;
+unsigned int Vacuum = 0; 
+//Push Buttons 
+unsigned int ReturnArm = 0;
+unsigned int PositionArm = 0; 
+//LED outputs
+unsigned int Magnet =0; 
+
 int main (void)
 {
 	InitIO();               //Call InitIO which configures the input and output pins
 	InitTimer();            //Call InitTimer which configures Timer1 for controlling LED pulse rate
 	InitUART();             //Call InitUART which configures the UART1 hardware module for communications
                             //with the HC-05 Bluetooth Module
+    
+   // needs to be in robot code  InitPWM();		//Revised by Fernando Ragone - Oct. 29 - q5 Call InitPWM function
 	
 	for (i=0; i<BUFF_SIZE; i++) SendDataArray[i] = 0;   //Initialize the array of chars to zero
 	SendDataArray[0] = 's';                             //Set first element as 's' for data synchronization
@@ -52,60 +93,88 @@ int main (void)
         ProcessData();      //Call ProcessData to update variables for UART1 Communications
 		SendData();         //Call SendData to send data through the UART1 TX pin to HC-05 Bluetooth Module
         
+        //AD1PCFGLbits.PCFG2 = 1; //added to initialize digital i/o
+        
         if(CommsLossCount>200){     //If communication loss persists, we assume complete loss of communication
             Shutdown();             //You must define code in Shutdown function below
         }
         else{                       //If there is communication, then the following code block will be executed
                                     //This is where all your functions should be executed
             LATAbits.LATA4 = 0;     //Turn off Communication loss LED
-            ADC();                  //Call ADC which configures and reads AN0
+            
+            ADC();                  //Revised by Fernando Ragone - Oct. 29 - Call ADC which configures and reads AN0 and AN1
+            
+            CondPWM();	//Revised by Fernando Ragone - Oct. 29 - q5 Call CondPWM function, used to adjust the PWM signals
+          // needs to be in robot code   Drive();	//Revised by Fernando Ragone - Oct. 29 - q5 Call Drive function, used to update PWM Hardware with new PWM signals
+            
+            //Switches 
+            AutoMode = PORTAbits.RA3;
+            BasketDump = PORTAbits.RA2;
+            Vacuum = PORTBbits.RB14; 
+            
+            //Push Buttons
+            ReturnArm = PORTBbits.RB15;
+            PositionArm = PORTBbits.RB7;
         } 
     }
 }
 /*****************************************************************************************************************/
 void InitIO (void)
 {
-	TRISAbits.TRISA0 = 1;	        //Set AN0 as input connceted to variable resistor (PMW_1)
-  TRISAbits.TRISA1 = 1;	        //Set AN1 as input connceted to variable resistor (PMW_2)
-  TRISAbits.TRISA2 = 1;	        //Set AN2 as input connceted to variable resistor (PMW_Arm)
-  
-  AD1PCFGLbits.PCFG11 = 1;	     //Set AN11 (RB13) to Digital IO
-	AD1PCFGLbits.PCFG12 = 1;	     //Set AN12 (RB12) to Digital IO
-  TRISAbits.TRISA11 = 1;	       //Set AN11 as input connceted push button (left)
-  TRISAbits.TRISA12 = 1;	       //Set AN12 as input connceted push button (reverse)
-  TRISBbits.TRISB11 = 1;	       //Set RB11 as input connceted push button (right)
-  TRISBbits.TRISB10 = 1;	       //Set RB10 as input connceted push button (forward)
-  PORTAbits.RA2 = 1;             //Set RA3 as input connceted push button (CCW arm rotation)
-  
-  AD1PCFGLbits.PCFG3 = 1;		     //Set AN3 (RB1) to Digital IO
-  AD1PCFGLbits.PCFG5 = 1;		     //Set AN5 (RB3) to Digital IO
-  TRISAbits.TRISA3 = 1;	         //Set AN3 as input conncected to switch (vertical arm movement)
-  TRISAbits.TRISA3 = 1;	         //Set AN3 as input conncected to switch (vacuum pump switch)
-  PORTAbits.RA2 = 1;             //Set RA2 as input conncected to switch (automated drive switch)
-  
-	TRISAbits.TRISA4 = 0;         //Set RA4 as output for LED to indicate communication loss
-  TRISBbits.TRISB5 = 0;	        //Set RB5 as output for LED to indicate magnetic sample detection
-  TRISBbits.TRISB6 = 0;         //Set RB6 as output for LED to indicate arm position over sample storage
+    //Push buttons for drive of robot 
+    TRISBbits.TRISB10 = 1; //Revised by Fernando Ragone - Oct. 29 -set RB10 input for drive push button - fwd
+    TRISBbits.TRISB11 = 1; //Revised by Fernando Ragone - Oct. 29 -set RB11 input for drive push button - right
+    TRISBbits.TRISB12 = 1; //Revised by Fernando Ragone - Oct. 29 -set RB12 input for drive push button - rev
+    TRISBbits.TRISB13 = 1; //Revised by Fernando Ragone - Oct. 29 -set RB13 input for drive push button - left
+    
+    //push buttons for movement of arm 
+    TRISBbits.TRISB0 = 1; //Revised by Fernando Ragone - Nov.6 -set RB0 input for Arm push button - clockwise spin
+    TRISBbits.TRISB1 = 1; //Revised by Fernando Ragone - Nov.6 -set RB1 input for Arm push button - counter clockwise spin
+    TRISBbits.TRISB2 = 1; //Revised by Fernando Ragone - Nov.6 -set RB2 input for Arm push button - Up vertical move
+    TRISBbits.TRISB3 = 1; //Revised by Fernando Ragone - Nov.6 -set RB3 input for Arm push button - down vertical move 
+    
+    //additional pushbuttons 
+    TRISBbits.TRISB7 = 1; //Revised by Fernando Ragone - Nov.6 -set RB7 - to move arm back on top of basket automatically 
+    TRISBbits.TRISB15 = 1; //Revised by Fernando Ragone - Nov.6 -set RB15 - to move arm back to drive mode automatically 
+    
+    //variable resistors (trimpots) 
+    TRISAbits.TRISA1 = 1;	//Revised by Fernando Ragone - Set RA1 (AN1) as input - Var resistor for ARM PWM
+    TRISAbits.TRISA0 = 1;	//Set RA0 (AN0) as input - Var resistor for DRIVE PWM
+    
+    //Output LEDs 
+    TRISBbits.TRISB6 = 0;    //Set RB6 as output for LED to indicate arm position over basket 
+	TRISAbits.TRISA4 = 0;   //Set RA4 as output for LED to indicate communication loss
+    TRISBbits.TRISB5 = 0;	//Set RB5 as output for LED to indicate Hall Sensor value from Robot MCU
+    
+    //switches 
+    TRISAbits.TRISA2 = 1;      //ADDED to set RA2 as input - basket dump switch 
+    TRISAbits.TRISA3 = 1;      //ADDED to set RA2 as input - auto/manual mode switch 
+    TRISBbits.TRISB14 = 1;      //ADDED to set RB14 as input - vacuum pump on/off 
 
-  
+    //Communication in/output initialize bits 
+	//RP8 TO U1RX           //Set the RP8 pin to UART1 RX pin
+	RPINR18bits.U1RXR = 8;	//See TABLE 11-1: SELECTABLE INPUT SOURCES (MAPS INPUT TO FUNCTION),Page 136
+                            //and REGISTER 11-8: RPINR18: PERIPHERAL PIN SELECT INPUT REGISTER 18,Page 146
 
-	//RP8 TO U1RX                 //Set the RP8 pin to UART1 RX pin
-	RPINR18bits.U1RXR = 8;	      //See TABLE 11-1: SELECTABLE INPUT SOURCES (MAPS INPUT TO FUNCTION),Page 136
-                                //and REGISTER 11-8: RPINR18: PERIPHERAL PIN SELECT INPUT REGISTER 18,Page 146
-  CNPU2bits.CN22PUE = 1;	      //Enable weak pull-up of Receive pin CN22 (Corresponds to RP8)
-                                //This is needed for v1.06 Bluetooth boards to pull up the receive line
-	//RP9 TO U1TX                 //Set the RP9 pin to UART1 TX pin
-	RPOR4bits.RP9R = 3;           //See TABLE 11-2: OUTPUT SELECTION FOR REMAPPABLE PIN (RPn), Page 137
-                                //and REGISTER 11-19: RPOR4: PERIPHERAL PIN SELECT OUTPUT REGISTERS 4, Page 154
+    CNPU2bits.CN22PUE = 1;	//Enable weak pull-up of Receive pin CN22 (Corresponds to RP8)
+                            //This is needed for v1.06 Bluetooth boards to pull up the receive line
+
+	//RP9 TO U1TX           //Set the RP9 pin to UART1 TX pin
+	RPOR4bits.RP9R = 3;     //See TABLE 11-2: OUTPUT SELECTION FOR REMAPPABLE PIN (RPn), Page 137
+                            //and REGISTER 11-19: RPOR4: PERIPHERAL PIN SELECT OUTPUT REGISTERS 4, Page 154
 }
 /*****************************************************************************************************************/
 void InitTimer(void)
+// For more information on PIC24H Timers Peripheral Module Library refer to link below:
+// file:///C:/Program%20Files%20(x86)/Microchip/xc16/v1.32/docs/periph_libs/dsPIC30F_dsPIC33F_PIC24H_dsPIC33E_PIC24E_Timers_Help.htm
 {                                                   //Prescaler = 1:8 and Period = 0xFFFF					
 	OpenTimer3 (T3_ON & T3_IDLE_STOP & T3_GATE_OFF & T3_PS_1_8 & T3_SOURCE_INT, 0xFFFF);							
 	ConfigIntTimer3 (T3_INT_PRIOR_1 & T3_INT_ON);   //Set interrupt priority and Turn Timer3's interrupt on
 }
 /*****************************************************************************************************************/
 void InitUART(void)
+// For more information on PIC24H UART Peripheral Module Library Help refer to link below:
+// file:///C:/Program%20Files%20(x86)/Microchip/xc16/v1.32/docs/periph_libs/dsPIC30F_dsPIC33F_PIC24H_dsPIC33E_PIC24E_UART_Help.htm
 {
  	IEC0bits.U1TXIE = 0; 		//Disable UART1 TX Interrupt
     IFS0bits.U1RXIF = 0;		//Clear the Receive Interrupt Flag
@@ -124,10 +193,13 @@ void InitUART(void)
 }
 /*****************************************************************************************************************/
 void ADC (void)
+// For more information on PIC24H ADC Peripheral Module Library refer to link below:
+// file:///C:/Program%20Files%20%28x86%29/Microchip/xc16/v1.32/docs/periph_libs/dsPIC33F_PIC24H_dsPIC33E_PIC24E_ADC_Library_Help.htm
 {                                   //12-bit sampling
                                     //Use dedicated ADC RC oscillator
                                     //Automatically start new conversion after previous
                                     //Use Avdd and Avss as reference levels
+    //VAR.1 (drive) motors PWM ADC 
 	OpenADC1(ADC_MODULE_OFF & ADC_AD12B_12BIT & ADC_FORMAT_INTG & ADC_CLK_AUTO & ADC_AUTO_SAMPLING_ON,
 		ADC_VREF_AVDD_AVSS & ADC_SCAN_OFF & ADC_ALT_INPUT_OFF,
 		ADC_SAMPLE_TIME_31 & ADC_CONV_CLK_INTERNAL_RC,
@@ -140,19 +212,110 @@ void ADC (void)
 	SetChanADC1(0, ADC_CH0_NEG_SAMPLEA_VREFN & ADC_CH0_POS_SAMPLEA_AN0);
 	AD1CON1bits.ADON = 1;           //Turn on ADC hardware module
 	while (AD1CON1bits.DONE == 0);	//Wait until conversion is done
-	ONTime = ReadADC1(0);           //ONTime = converted results
+	PWM1 = ReadADC1(0);              // Revised by Fernando Ragone - Oct. 29 - Q5 will still have 2 PMWs for easy adaptation if we want to set 2 different speeds
 	AD1CON1bits.ADON = 0;           //Turn off ADC hardware module
+    
+    //VAR.2 (Arm) motors PWM ADC 
+    OpenADC1(ADC_MODULE_OFF & ADC_AD12B_12BIT & ADC_FORMAT_INTG & ADC_CLK_AUTO & ADC_AUTO_SAMPLING_ON,
+			ADC_VREF_AVDD_AVSS & ADC_SCAN_OFF & ADC_ALT_INPUT_OFF,
+			ADC_SAMPLE_TIME_31 & ADC_CONV_CLK_INTERNAL_RC,
+			ADC_DMA_BUF_LOC_1,
+			ENABLE_AN1_ANA,
+			0,
+			0,
+			0);
+                                    //Revised by Fernando Ragone - Oct. 29 -Select AN1
+	SetChanADC1(0, ADC_CH0_NEG_SAMPLEA_VREFN & ADC_CH0_POS_SAMPLEA_AN1);
+	AD1CON1bits.ADON = 1;           //Turn on ADC hardware module
+	while (AD1CON1bits.DONE == 0);	//Wait until conversion is done
+	PWM2 = ReadADC1(0);             //Revised by Fernando Ragone - Oct. 29 - Read conversion results and store in PWM1 
+	AD1CON1bits.ADON = 0;           //Turn off ADC hardware module
+    
+}
+void CondPWM(void) //Revised by Fernando Ragone - Oct. 29 - Q5 added to condition the PWM 
+{										
+	PWM1 = ~(PWM1 *16);	//Invert, multiply by 16 to scale a 12 bit value to 16 bit memory location
+	PWM2 = ~(PWM2 *16);	//Invert, multiply by 16 to scale a 12 bit value to 16 bit memory location
 }
 /*****************************************************************************************************************/
 void ProcessData(void)
 {
-	SendDataArray[1] = (ONTime >> 8);       //Populate the array one byte at a time
-	SendDataArray[2] = ONTime;
-
-	Photocell = (ReceiveDataArray[1] << 8) + ReceiveDataArray[2];   //Build integer from array of bytes
-
+	//communication check 
     SendDataArray[20] = 1;                  //Sending a 1 for robot to check for communication (i.e. new data)
     Communicating = ReceiveDataArray[20];   //Checking if the robot sent us a 1, which will indicate communication
+    
+    //switches send data 
+    SendDataArray[1] = AutoMode;       //auto mode switch status
+	SendDataArray[2] = BasketDump;      // basket dump switch status 
+	SendDataArray[3] = Vacuum;         //vacuum switch status
+
+    //Recieve data for  LEDs 
+	Magnet = (ReceiveDataArray [4] << 8) + ReceiveDataArray[5];   //leaving this for the possibility that Hall Sensor input isnt sent as 0/1 
+    PORTBbits.RB6 = (ReceiveDataArray[14]);        //Arm sensor position over basket 
+    PORTBbits.RB5 = Magnet; //turn on LED if Hall sensor value 1 - will need to change if there needs to be tewAKING TO VALUE
+    
+    //PWM data send 
+    SendDataArray[6] = (PWM1 >> 8);       //Populate the array one byte at a time for PWM of drive motors 
+	SendDataArray[7] = PWM1;
+    
+    SendDataArray[12] = (PWM2 >> 8);       //Populate the array one byte at a time for PWM of ARM motors 
+	SendDataArray[13] = PWM2;
+   
+    //Other push buttons 
+    SendDataArray[15] = ReturnArm;       //push button to return arm to drive mode
+	SendDataArray[16] = PositionArm;      //push button to position arm over basket 
+    
+    //direction for drive of robot 
+    if (PORTBbits.RB10) //Revised by Fernando Ragone - Oct. 29 - added if statment to determine what button is pressed and set direction bit
+            {
+                Direction =1; //Revised by Fernando Ragone - Oct. 29 - if button 1 is pressed set direction 1 - fwd
+            }
+        else if (PORTBbits.RB11)
+            {
+                Direction = 2; //Revised by Fernando Ragone - Oct. 29 - if button 2 is pressed set direcetion 2 - right 
+            }
+        else if (PORTBbits.RB12)
+            {
+                Direction = 3; //Revised by Fernando Ragone - Oct. 29 - if button 3, set direction to 3 - reverse 
+            }
+        else if (PORTBbits.RB13)
+            {
+                Direction = 4; // Revised by Fernando Ragone - Oct. 29 - if button 4, set direction 4 - left 
+            }
+        else 
+            {
+                Direction = 0; //Revised by Fernando Ragone - Oct. 29 - if no button is pressed, set direction to 0 - all motor stopped
+            }
+    
+    
+    SendDataArray[8] = (Direction >> 8);       // Revised by Fernando Ragone - Oct. 29 - Q5 Populate the array one byte at a time for DRIVE direction bit
+	SendDataArray[9] = Direction;
+    
+    //direction for arm of robot 
+    if (PORTBbits.RB0) //Revised by Fernando Ragone - Oct. 29 - added if statment to determine what button is pressed and set direction bit
+            {
+                ArmDirection =1; //Revised by Fernando Ragone - Oct. 29 - if button 1 is pressed set direction 1 - clockwise
+            }
+        else if (PORTBbits.RB1)
+            {
+                ArmDirection = 2; //Revised by Fernando Ragone - Oct. 29 - if button 2 is pressed set direcetion 2 - counter clockwise 
+            }
+        else if (PORTBbits.RB2)
+            {
+                ArmDirection = 3; //Revised by Fernando Ragone - Oct. 29 - if button 3, set direction to 3 - up  
+            }
+        else if (PORTBbits.RB3)
+            {
+                ArmDirection = 4; // Revised by Fernando Ragone - Oct. 29 - if button 4, set direction 4 - down
+            }
+        else 
+            {
+                Direction = 0; //Revised by Fernando Ragone - Oct. 29 - if no button is pressed, set direction to 0 - all motor stopped
+            }
+            
+    SendDataArray[10] = (ArmDirection >> 8);       // Populate the array one byte at a time for ARM direction bit
+	SendDataArray[11] = ArmDirection;
+    
     
     if(Communicating){                      //If there is communication, reset the communication loss counter
         CommsLossCount = 0;
@@ -213,3 +376,9 @@ void __attribute__ ((interrupt, no_auto_psv)) _U1RXInterrupt(void)
     }
      EnableIntU1RX;                                 //Enable the UART1 receive interrupt
 }
+
+long Map(long x, long in_min, long in_max, long out_min, long out_max) //ADDED Q4
+{
+ return (x-in_min)*(out_max-out_min)/(in_max-in_min)+out_min;
+} 
+// the mapping function makes the whole var transistor be usable to finely tune your servo
