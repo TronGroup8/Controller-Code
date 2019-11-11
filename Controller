@@ -1,21 +1,8 @@
 /*================================================================================================================
- Program4-Controller.c; (Note: Program for the Controller PIC24H microcontroller)
- 
- A variable resistor connected to AN0 will be used to vary a voltage from 0Vdc to
- 3.3Vdc.  The ADC results are stored into a variable (ONTime) which will then be 
- added to an array (SendDataArray).  This array will utilize the UART1 hardware
- module to send this data through the TX pin to a HC-O5 Bluetooth Module.  Another
- HC-05 Bluetooth Module which is paired will be connected to the Robot PIC24H
- microcontroller. The Controller PIC24H microcontroller will also utilize the UART1
- module to receive data through the RX pin connected to the HC-05 Bluetooth Module
- and store this data into an array (ReceiveDataArray). A value from this array is stored
- into a variable (Photocell) and is used to adjust Timer3's Interrupt which will
- control the pulse rate of an LED connected to RB5.
-
- Note: Communications is setup for 115200 Baud, 8 Data Bits, 1 Stop Bit and No Parity Bit
-
- For information on PIC24H Compiler Peripheral Libraries refer to link below:
- file:///C:/Program%20Files%20(x86)/Microchip/xc16/v1.32/docs/periph_libs/16-bit%20Peripheral%20Libraries.htm
+ * Controller Program for Team 8 in MME4487. 
+ * 
+ * 
+ * //Programmed by Fernando Ragone//
 =================================================================================================================*/
 #include "p24HJ128GP502.h"  //Include device library file
 #include "timer.h"          //Include TIMER library file
@@ -68,7 +55,7 @@ unsigned int ArmDirection =0; //direction bit to set direction of arm
 
 //switch inputs 
 unsigned int AutoMode = 0;
-unsigned int BasketDump = 0;
+unsigned int BasketDumpONTIME = 0;
 unsigned int Vacuum = 0; 
 //Push Buttons 
 unsigned int ReturnArm = 0;
@@ -109,8 +96,17 @@ int main (void)
             
             //Switches 
             AutoMode = PORTAbits.RA3;
-            BasketDump = PORTAbits.RA2;
             Vacuum = PORTBbits.RB14; 
+            
+            if (PORTAbits.RA2) // if  to read the input of basket dump switch on controller
+            {
+                BasketDumpONTIME = 911; //Revised by Fernando Ragone - Oct. 23 - if slider is high, then set on time to 45 degrees 
+            }                 //WILL NEED TO ADJUST ONTIME
+            
+                else
+                {
+                  BasketDumpONTIME = 3376; //Revised by Fernando Ragone - Oct. 23 - if slider is low, then set on time to 135 degrees
+                }               //WILL NEED TO ADJUST ONTIME
             
             //Push Buttons
             ReturnArm = PORTBbits.RB15;
@@ -246,8 +242,9 @@ void ProcessData(void)
     
     //switches send data 
     SendDataArray[1] = AutoMode;       //auto mode switch status
-	SendDataArray[2] = BasketDump;      // basket dump switch status 
-	SendDataArray[3] = Vacuum;         //vacuum switch status
+	SendDataArray[2] = (BasketDumpONTIME >>8);      // basket dump switch status 
+	SendDataArray[17] = BasketDumpONTIME;
+    SendDataArray[3] = Vacuum;         //vacuum switch status
 
     //Recieve data for  LEDs 
 	Magnet = (ReceiveDataArray [4] << 8) + ReceiveDataArray[5];   //leaving this for the possibility that Hall Sensor input isnt sent as 0/1 
